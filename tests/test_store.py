@@ -221,4 +221,4 @@ def test_reader_exposes_no_write_methods(backend: Backend) -> None:
     reader = backend.reader()
     assert reader.ontology is backend.store.ontology
     public = {name for name in dir(reader) if not name.startswith("_")}
-    assert public <= {"ontology", "get_nodes", "get_edges", "find_nodes", "close"}
+    assert public <= {"ontology", "get_nodes", "get_edges", "find_nodes", "connect", "close"}

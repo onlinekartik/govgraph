@@ -94,6 +94,18 @@ def test_rows_are_stored_under_deterministic_ids(
 def test_reader_refuses_a_role_that_can_write(store: gg.PostgresStore) -> None:
     with pytest.raises(gg.UnsafeRoleError, match="able to modify the graph"):
         store.reader().get_nodes([asset("raw.payments").id])
+    with pytest.raises(gg.UnsafeRoleError):
+        store.reader().connect()
+
+
+def test_unsafe_role_is_logged_for_the_operator_but_not_shown_to_the_agent(
+    store: gg.PostgresStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    kit = gg.Toolkit(store.reader())
+    with caplog.at_level("WARNING", logger="govgraph.tools"), pytest.raises(gg.ToolError) as caught:
+        kit.find_by_term("revenue")
+    assert str(caught.value) == "store_error: the graph store could not answer"
+    assert "able to modify the graph" in caplog.text
 
 
 def test_reader_refuses_a_role_with_one_write_grant(

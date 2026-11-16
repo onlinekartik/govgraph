@@ -99,6 +99,15 @@ class PostgresReader:
     ) -> None:
         self.close()
 
+    def connect(self) -> None:
+        """Connect now and check the database role, instead of on the first query.
+
+        Call this at start-up so that a misconfigured role is reported to the operator
+        straight away rather than to an agent in the middle of a tool call.
+        """
+        with self._lock:
+            self._open()
+
     def close(self) -> None:
         with self._lock:
             self._drop_connection()

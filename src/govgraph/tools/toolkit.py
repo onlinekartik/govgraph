@@ -30,6 +30,7 @@ from govgraph.tools.results import ToolResult, Truncation
 from govgraph.tools.schemas import TOOL_SPECS
 
 _AUDIT_LOG = logging.getLogger("govgraph.audit")
+_LOG = logging.getLogger("govgraph.tools")
 
 # The core ontology types the tools are written against.
 DATA_ASSET = "DataAsset"
@@ -203,7 +204,9 @@ class Toolkit:
         except BudgetExhaustedError as exhausted:
             return limits, exhausted.reason
         except StoreError as error:
-            # Deliberately vague: store errors can carry connection or query details.
+            # The agent gets a deliberately vague message, because store errors can carry
+            # connection or query details. The operator gets the reason in the log.
+            _LOG.warning("tool %s could not read from the store: %s", name, error)
             raise ToolError("store_error", "the graph store could not answer") from error
         return limits, None
 
