@@ -41,6 +41,28 @@ def test_connections_get_a_timeout_unless_the_dsn_sets_one(
     assert seen[1]["connect_timeout"] == "3"
     assert seen[0]["host"] == "db"
 
+    # Inside a call, connecting may not take longer than the time the call has left.
+    waits = {}
+    for dsn, left in [
+        ("postgresql://u@db/meta", 4.2),
+        ("postgresql://u@db/meta", 0.3),
+        ("postgresql://u@db/meta?connect_timeout=3", 60.0),
+        ("postgresql://u@db/meta?connect_timeout=0", 6.0),
+        ("postgresql://u@db/meta?connect_timeout=soon", 6.0),
+    ]:
+        with pytest.raises(gg.StoreError):
+            postgres._connect(dsn, max_wait_s=left)
+        waits[dsn, left] = seen[-1]["connect_timeout"]
+    assert list(waits.values()) == [5, 2, 3, 6, 6]
+
+
+def test_reader_gives_up_when_the_deadline_has_passed(ontology: gg.Ontology) -> None:
+    reader = gg.PostgresStore(ontology, UNREACHABLE).reader()
+    with pytest.raises(gg.StoreTimeoutError, match="exceeded its time limit"):
+        reader.get_nodes(["DataAsset:" + "0" * 32], timeout_s=0)
+    with pytest.raises(gg.StoreTimeoutError):
+        reader.find_nodes("Owner", "name", "x", limit=1, timeout_s=-1)
+
 
 def test_nothing_is_sent_when_there_is_nothing_to_do(ontology: gg.Ontology) -> None:
     store = gg.PostgresStore(ontology, UNREACHABLE)

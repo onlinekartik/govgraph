@@ -29,7 +29,7 @@ def quote_ident(name: str) -> str:
     Every identifier govgraph puts into SQL goes through here. Identifiers come only
     from the validated ontology or from operator configuration, never from tool input.
     """
-    if not _IDENTIFIER.match(name):
+    if not isinstance(name, str) or not _IDENTIFIER.fullmatch(name):
         raise StoreError(f"unsafe SQL identifier: {name!r}")
     return f'"{name}"'
 

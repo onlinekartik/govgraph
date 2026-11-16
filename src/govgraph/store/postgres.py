@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections import defaultdict
@@ -42,18 +43,38 @@ def _driver() -> Any:
 
 
 CONNECT_TIMEOUT_S = 10
+_MIN_CONNECT_TIMEOUT_S = 2  # libpq does not honour anything shorter
+_TIMED_OUT = "the query exceeded its time limit"
 
 
-def _connect(dsn: str) -> psycopg.Connection[tuple[Any, ...]]:
+def _connect(dsn: str, max_wait_s: float | None = None) -> psycopg.Connection[tuple[Any, ...]]:
     driver = _driver()
     try:
         # Without a timeout an unreachable host can block far longer than any tool limit.
         options = driver.conninfo.conninfo_to_dict(dsn)
         options.setdefault("connect_timeout", CONNECT_TIMEOUT_S)
+        if max_wait_s is not None:
+            allowed = max(_MIN_CONNECT_TIMEOUT_S, math.ceil(max_wait_s))
+            try:
+                configured = int(options["connect_timeout"])
+            except (TypeError, ValueError):
+                configured = CONNECT_TIMEOUT_S
+            options["connect_timeout"] = min(configured, allowed) if configured > 0 else allowed
         connection: psycopg.Connection[tuple[Any, ...]] = driver.connect(**options)
     except driver.Error as exc:
         raise StoreError("could not connect to the database") from exc
     return connection
+
+
+def _deadline(timeout_s: float | None) -> float:
+    return time.monotonic() + (DEFAULT_TIMEOUT_S if timeout_s is None else timeout_s)
+
+
+def _remaining(deadline: float) -> float:
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise StoreTimeoutError(_TIMED_OUT)
+    return left
 
 
 def _utc(value: Any) -> Any:
@@ -112,8 +133,19 @@ class PostgresReader:
         Call this at start-up so that a misconfigured role is reported to the operator
         straight away rather than to an agent in the middle of a tool call.
         """
-        with self._lock:
-            self._open()
+        deadline = _deadline(None)
+        with self._locked(deadline):
+            self._open(deadline)
+
+    @contextmanager
+    def _locked(self, deadline: float) -> Iterator[None]:
+        """Hold the connection, giving up if another caller keeps it past the deadline."""
+        if not self._lock.acquire(timeout=_remaining(deadline)):
+            raise StoreTimeoutError(_TIMED_OUT)
+        try:
+            yield
+        finally:
+            self._lock.release()
 
     def close(self) -> None:
         with self._lock:
@@ -124,25 +156,30 @@ class PostgresReader:
             connection, self._connection = self._connection, None
             connection.close()
 
-    def _open(self) -> psycopg.Connection[tuple[Any, ...]]:
+    def _open(self, deadline: float) -> psycopg.Connection[tuple[Any, ...]]:
         if self._connection is not None and not self._connection.closed:
             return self._connection
-        connection = _connect(self._dsn)
+        connection = _connect(self._dsn, max_wait_s=_remaining(deadline))
         try:
             connection.read_only = True
-            self._check_role(connection)
+            self._check_role(connection, deadline)
         except BaseException:
             connection.close()
             raise
         self._connection = connection
         return connection
 
-    def _check_role(self, connection: psycopg.Connection[tuple[Any, ...]]) -> None:
+    def _check_role(self, connection: psycopg.Connection[tuple[Any, ...]], deadline: float) -> None:
+        driver = _driver()
         statement = self._catalog.role_privileges()
+        timeout = self._catalog.set_timeout(_remaining(deadline))
         try:
             with connection.transaction():
+                connection.execute(timeout.text, timeout.params)
                 row = connection.execute(statement.text, statement.params).fetchone()
-        except _driver().Error as exc:
+        except driver.errors.QueryCanceled as exc:
+            raise StoreTimeoutError(_TIMED_OUT) from exc
+        except driver.Error as exc:
             raise StoreError("could not check the privileges of the database role") from exc
         schema_exists, is_superuser, can_create, can_modify = row or (False, False, False, False)
         if not schema_exists:
@@ -156,19 +193,24 @@ class PostgresReader:
                 "allow_write_capable_role=True to accept the risk"
             )
 
-    def _run(self, statement: Statement, timeout_s: float | None) -> list[tuple[Any, ...]]:
+    def _run(self, statement: Statement, deadline: float) -> list[tuple[Any, ...]]:
+        """Run one allow-listed statement, finishing or giving up by ``deadline``.
+
+        The deadline covers waiting for another thread to release the connection and
+        connecting, not only the statement itself.
+        """
         if statement.name not in READ_QUERIES:
             raise StoreError(f"'{statement.name.value}' is not an allow-listed read query")
         driver = _driver()
-        timeout = self._catalog.set_timeout(DEFAULT_TIMEOUT_S if timeout_s is None else timeout_s)
-        with self._lock:
-            connection = self._open()
+        with self._locked(deadline):
+            connection = self._open(deadline)
+            timeout = self._catalog.set_timeout(_remaining(deadline))
             try:
                 with connection.transaction():
                     connection.execute(timeout.text, timeout.params)
                     return connection.execute(statement.text, statement.params).fetchall()
             except driver.errors.QueryCanceled as exc:
-                raise StoreTimeoutError("the query exceeded its time limit") from exc
+                raise StoreTimeoutError(_TIMED_OUT) from exc
             except driver.Error as exc:
                 self._drop_connection()
                 raise StoreError("a read query failed") from exc
@@ -179,14 +221,11 @@ class PostgresReader:
             if is_id(node_id) and id_type(node_id) in self._ontology.node_types:
                 by_type[id_type(node_id)].append(node_id)
         # One query per node type, all sharing the one time allowance.
-        deadline = time.monotonic() + (DEFAULT_TIMEOUT_S if timeout_s is None else timeout_s)
+        deadline = _deadline(timeout_s)
         nodes: list[Node] = []
         for node_type, ids in sorted(by_type.items()):
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise StoreTimeoutError("the query exceeded its time limit")
             columns = node_columns(self._ontology.node_type(node_type))
-            for row in self._run(self._catalog.nodes_by_id(node_type, sorted(ids)), remaining):
+            for row in self._run(self._catalog.nodes_by_id(node_type, sorted(ids)), deadline):
                 nodes.append(Node(row[0], node_type, _properties(columns[1:], row[1:])))
         return sorted(nodes, key=lambda n: n.id)
 
@@ -210,7 +249,7 @@ class PostgresReader:
                 target_id=row[3],
                 properties=_properties(columns[base:], row[base:]),
             )
-            for row in self._run(statement, timeout_s)
+            for row in self._run(statement, _deadline(timeout_s))
         ]
 
     def find_nodes(
@@ -227,7 +266,7 @@ class PostgresReader:
         columns = node_columns(self._ontology.node_type(node_type))
         return [
             Node(row[0], node_type, _properties(columns[1:], row[1:]))
-            for row in self._run(statement, timeout_s)
+            for row in self._run(statement, _deadline(timeout_s))
         ]
 
 

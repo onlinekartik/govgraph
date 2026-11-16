@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 
 import pytest
 
@@ -117,6 +118,67 @@ def test_reader_refuses_a_role_with_one_write_grant(
         store.reader(pg.reader_dsn).get_nodes([asset("raw.payments").id])
 
 
+@pytest.mark.parametrize(
+    "grant",
+    [
+        'GRANT UPDATE ("name") ON "{schema}"."node_owner" TO "{role}"',
+        'GRANT INSERT ("id", "name") ON "{schema}"."node_owner" TO "{role}"',
+        'GRANT DELETE ON "{schema}"."edge_owned_by" TO "{role}"',
+        'GRANT TRUNCATE ON "{schema}"."node_owner" TO "{role}"',
+        'GRANT CREATE ON SCHEMA "{schema}" TO "{role}"',
+    ],
+)
+def test_reader_refuses_every_kind_of_write_grant(
+    store: gg.PostgresStore, pg: PostgresSandbox, grant: str
+) -> None:
+    store.grant_reader(pg.reader_role)
+    store.reader(pg.reader_dsn).connect()  # read-only so far, so accepted
+    pg.execute(grant.format(schema=pg.schema, role=pg.reader_role))
+    with pytest.raises(gg.UnsafeRoleError):
+        store.reader(pg.reader_dsn).connect()
+
+
+def test_waiting_for_the_connection_counts_against_the_time_limit(
+    reader: PostgresReader, pg: PostgresSandbox
+) -> None:
+    """Two callers share one reader, as they do under the MCP server."""
+    import psycopg
+
+    node_id = asset("raw.payments").id
+    reader.connect()
+    locked, release = threading.Event(), threading.Event()
+
+    def hold_table_lock() -> None:
+        with psycopg.connect(pg.admin_dsn) as connection:
+            connection.execute(
+                f'LOCK TABLE "{pg.schema}"."node_data_asset" IN ACCESS EXCLUSIVE MODE'
+            )
+            locked.set()
+            release.wait(timeout=30)
+
+    def slow_caller() -> None:
+        # Blocks in the database until the table lock goes away, holding the reader.
+        reader.get_nodes([node_id], timeout_s=20)
+
+    blocker = threading.Thread(target=hold_table_lock)
+    blocker.start()
+    assert locked.wait(timeout=10)
+    first = threading.Thread(target=slow_caller)
+    first.start()
+    time.sleep(0.3)  # let the first caller take the reader and block in the database
+    started = time.monotonic()
+    try:
+        with pytest.raises(gg.StoreTimeoutError):
+            reader.get_nodes([node_id], timeout_s=0.4)
+        waited = time.monotonic() - started
+    finally:
+        release.set()
+        blocker.join()
+        first.join()
+    assert waited < 1.0, "the second caller must give up at its own deadline"
+    assert len(reader.get_nodes([node_id], timeout_s=5)) == 1
+
+
 def test_write_capable_role_can_be_accepted_explicitly(store: gg.PostgresStore) -> None:
     gg.ingest(online_store(), store)
     with store.reader(allow_write_capable_role=True) as reader:
@@ -151,7 +213,7 @@ def test_reader_runs_in_read_only_transactions(store: gg.PostgresStore) -> None:
 
     with store.reader(allow_write_capable_role=True) as reader:
         reader.get_nodes([])
-        connection = reader._open()
+        connection = reader._open(time.monotonic() + 5)
         assert connection.read_only is True
         with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
             connection.execute(
@@ -168,7 +230,7 @@ def test_reader_only_runs_allow_listed_statements(reader: PostgresReader) -> Non
         catalog.existing_node_ids("Owner", []),
     ):
         with pytest.raises(gg.StoreError, match="is not an allow-listed read query"):
-            reader._run(statement, None)
+            reader._run(statement, time.monotonic() + 5)
 
 
 def test_statement_timeout_is_enforced(reader: PostgresReader, pg: PostgresSandbox) -> None:

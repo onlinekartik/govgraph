@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 import govgraph as gg
@@ -23,9 +25,9 @@ def test_quote_ident_accepts_plain_names(name: str) -> None:
 
 @pytest.mark.parametrize(
     "name",
-    ["", "Upper", "1abc", "a-b", "a b", 'a"b', "a;b", "x" * 64, "tab\t", "a.b", "é"],
+    ["", "Upper", "1abc", "a-b", "a b", 'a"b', "a;b", "x" * 64, "tab\t", "a.b", "é", "name\n", 7],
 )
-def test_quote_ident_refuses_anything_else(name: str) -> None:
+def test_quote_ident_refuses_anything_else(name: Any) -> None:
     with pytest.raises(gg.StoreError, match="unsafe SQL identifier"):
         quote_ident(name)
 

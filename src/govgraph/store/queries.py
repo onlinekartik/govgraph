@@ -88,7 +88,9 @@ class QueryCatalog:
             "COALESCE(has_schema_privilege(n.oid, 'CREATE'), false), "
             "EXISTS (SELECT 1 FROM pg_class c WHERE c.relnamespace = n.oid "
             "AND c.relkind IN ('r', 'p') "
-            "AND has_table_privilege(c.oid, 'INSERT, UPDATE, DELETE, TRUNCATE')) "
+            "AND (has_table_privilege(c.oid, 'DELETE, TRUNCATE') "
+            # Also true for a grant on individual columns, which the table check misses.
+            "OR has_any_column_privilege(c.oid, 'INSERT, UPDATE'))) "
             "FROM pg_roles r LEFT JOIN pg_namespace n ON n.nspname = %s "
             "WHERE r.rolname = current_user"
         )
