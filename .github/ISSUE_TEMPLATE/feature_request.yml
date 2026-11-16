@@ -1,0 +1,45 @@
+name: Feature request
+description: Suggest a new capability or a change to an existing one.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do
+      description: The task or question you cannot handle well today. A concrete example helps.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+      description: What the change might look like from the outside, such as an API, a tool or an ontology type.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Ontology
+        - Store
+        - Graph engine mapping
+        - Adapter
+        - Agent tools or MCP
+        - Viewer
+        - Command line
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Other ways you considered, including doing it outside govgraph, for example with an ontology extension or your own adapter.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety properties
+      options:
+        - label: This keeps the tools read-only, bounded and cited, or I have explained above why it should not.
+          required: true
