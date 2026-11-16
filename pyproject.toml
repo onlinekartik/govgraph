@@ -1,0 +1,97 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "govgraph"
+version = "0.1.0"
+description = "Turn data-governance metadata into a typed knowledge graph that AI agents traverse through bounded, auditable tools."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "The govgraph contributors" }]
+keywords = ["data governance", "knowledge graph", "lineage", "data quality", "agents"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Database",
+  "Typing :: Typed",
+]
+dependencies = [
+  "PyYAML>=6.0",
+  "jsonschema>=4.18",
+  "networkx>=3.0",
+]
+
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.1"]
+mcp = ["mcp>=1.2"]
+dev = [
+  "govgraph[postgres,mcp]",
+  "pytest>=8.0",
+  "pytest-cov>=5.0",
+  "mypy>=1.10",
+  "ruff>=0.6",
+  "types-PyYAML",
+  "types-jsonschema",
+  "types-networkx",
+]
+
+[project.scripts]
+govgraph = "govgraph.cli:main"
+
+[project.entry-points."govgraph.adapters"]
+csv = "govgraph.adapters.csv_json:CsvAdapter"
+json = "govgraph.adapters.csv_json:JsonAdapter"
+dbt = "govgraph.adapters.dbt:DbtAdapter"
+openmetadata = "govgraph.adapters.openmetadata:OpenMetadataAdapter"
+datahub = "govgraph.adapters.datahub:DataHubAdapter"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/govgraph"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "docs", "examples", "README.md", "CHANGELOG.md", "LICENSE"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "C4", "PT", "RUF", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+"examples/**" = ["S101"]
+
+[tool.mypy]
+strict = true
+python_version = "3.10"
+files = ["src", "tests", "examples"]
+warn_unreachable = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --cov=govgraph --cov-report=term-missing:skip-covered"
+markers = [
+  "postgres: needs a PostgreSQL database (set GOVGRAPH_TEST_DSN)",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["govgraph"]
+
+[tool.coverage.report]
+fail_under = 90
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+  "\\.\\.\\.$",
+]
