@@ -98,7 +98,6 @@ node_types:
   DQResult:
     description: The outcome of evaluating one rule in one run.
     key: [rule_id, run_id]
-    display: run_id
     properties:
       rule_id: { type: string, required: true }
       run_id: { type: string, required: true }

@@ -163,8 +163,8 @@ def _build_node_type(name: str, raw: Mapping[str, Any], problems: list[str]) -> 
             problems.append(f"{name}: key field '{field}' must be required")
         elif prop.type not in KEY_PROPERTY_TYPES:
             problems.append(f"{name}: key field '{field}' must be a string or an integer")
-    display = raw.get("display") or ("name" if "name" in properties else (key[0] if key else ""))
-    if display and display not in properties:
+    display = raw.get("display") or ("name" if "name" in properties else None)
+    if display is not None and display not in properties:
         problems.append(f"{name}: display property '{display}' is not a declared property")
     return NodeType(
         name=name,

@@ -57,7 +57,7 @@ def test_every_core_type_is_described_and_keyed(ontology: gg.Ontology) -> None:
     for node_type in ontology.node_types.values():
         assert node_type.description
         assert node_type.key
-        assert node_type.display in node_type.properties
+        assert node_type.display is None or node_type.display in node_type.properties
     for edge_type in ontology.edge_types.values():
         assert edge_type.description
         assert edge_type.phrase

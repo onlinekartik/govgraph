@@ -60,25 +60,34 @@ class Property:
 
 @dataclass(frozen=True)
 class NodeType:
-    """A node type. ``key`` names the properties that form the natural key."""
+    """A node type.
+
+    ``key`` names the properties that form the natural key. ``display`` names the
+    property to show people; without one, the key is shown.
+    """
 
     name: str
     key: tuple[str, ...]
     properties: Mapping[str, Property]
-    display: str
+    display: str | None = None
     description: str = ""
 
     @property
     def table(self) -> str:
         return f"node_{snake_case(self.name)}"
 
+    def label(self, properties: Mapping[str, Any]) -> str:
+        """A short human-readable name for a node with these properties."""
+        if self.display is not None and properties.get(self.display) is not None:
+            return str(properties[self.display])
+        return "/".join(str(properties.get(field, "?")) for field in self.key)
+
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "description": self.description,
-            "key": list(self.key),
-            "display": self.display,
-            "properties": {name: prop.to_dict() for name, prop in self.properties.items()},
-        }
+        out: dict[str, Any] = {"description": self.description, "key": list(self.key)}
+        if self.display is not None:
+            out["display"] = self.display
+        out["properties"] = {name: prop.to_dict() for name, prop in self.properties.items()}
+        return out
 
 
 @dataclass(frozen=True)
