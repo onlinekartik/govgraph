@@ -1,0 +1,79 @@
+# The online-store example: PostgreSQL, PuppyGraph and a one-shot demo container.
+#
+#   docker compose up --build
+#
+# No password is stored in this repository. The first start generates random ones into
+# the "secrets" volume, which only these containers mount. Nothing is published beyond
+# the local machine, and PostgreSQL is not published at all.
+
+services:
+  init-secrets:
+    image: postgres:16-alpine
+    restart: "no"
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -eu
+        umask 022
+        for name in postgres_password reader_password puppygraph_password; do
+          if [ ! -s "/secrets/$$name" ]; then
+            head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' > "/secrets/$$name"
+          fi
+        done
+    volumes:
+      - secrets:/secrets
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/gg-secrets/postgres_password
+    volumes:
+      - secrets:/run/gg-secrets:ro
+    depends_on:
+      init-secrets:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready --username postgres --dbname postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  puppygraph:
+    image: puppygraph/puppygraph:1.19.1
+    # The image takes its password from the environment, so read the generated one first.
+    entrypoint:
+      - bash
+      - -c
+      - export PUPPYGRAPH_PASSWORD="$$(cat /run/gg-secrets/puppygraph_password)" && exec bash ./entrypoint.sh
+    environment:
+      PUPPYGRAPH_USERNAME: puppygraph
+    volumes:
+      - secrets:/run/gg-secrets:ro
+    ports:
+      - "127.0.0.1:8081:8081" # web UI and HTTP API
+      - "127.0.0.1:7687:7687" # Bolt, for Cypher clients
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  demo:
+    build:
+      context: ../..
+      dockerfile: examples/online_store/Dockerfile
+    restart: "no"
+    environment:
+      DEMO_SECRETS_DIR: /run/gg-secrets
+      DEMO_POSTGRES_HOST: postgres
+      DEMO_PUPPYGRAPH_URL: http://puppygraph:8081
+      DEMO_OUTPUT_DIR: /out
+    volumes:
+      - secrets:/run/gg-secrets:ro
+      - ./out:/out
+    depends_on:
+      postgres:
+        condition: service_healthy
+      puppygraph:
+        condition: service_healthy
+
+volumes:
+  secrets:

@@ -13,3 +13,5 @@ coverage.xml
 .ruff_cache/
 .env
 .DS_Store
+examples/online_store/out/*
+!examples/online_store/out/.gitkeep
