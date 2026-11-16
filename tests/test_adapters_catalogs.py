@@ -654,7 +654,9 @@ def test_datahub_export_becomes_a_graph(tmp_path: Path, ontology: gg.Ontology) -
     assert affected == [
         "A problem at DataAsset 'shop.orders.total' affects "
         "DataAsset 'shop.order_facts.order_total' (1 step: "
-        "DataAsset 'shop.order_facts.order_total' derives from DataAsset 'shop.orders.total')"
+        "DataAsset 'shop.order_facts.order_total' derives from DataAsset 'shop.orders.total')",
+        "A problem at DataAsset 'shop.orders.total' affects DataAsset 'shop.orders' "
+        "(1 step: DataAsset 'shop.orders.total' is part of DataAsset 'shop.orders')",
     ]
     owners = said(kit.impact_of(gg.node_id("DataProduct", {"name": "revenue"}), depth=1))
     assert owners == [

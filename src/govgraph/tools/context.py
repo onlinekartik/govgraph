@@ -96,8 +96,14 @@ class ToolContext:
             raise BudgetExhaustedError("rows")
         return edges
 
-    def find(self, node_type: str, prop: str, value: str, match: Match) -> list[Node]:
-        """Return the nodes of one type whose text property matches ``value``."""
+    def find(
+        self, node_type: str, prop: str, value: str, match: Match, *, keep: bool = True
+    ) -> list[Node]:
+        """Return the nodes of one type whose text property matches ``value``.
+
+        With ``keep=False`` the nodes count against the budget but only join the result
+        if a claim later cites them.
+        """
         timeout = self._time_left()
         try:
             rows = self._reader.find_nodes(
@@ -107,7 +113,8 @@ class ToolContext:
             raise BudgetExhaustedError("timeout") from None
         nodes, dropped = self._take(rows)
         self._seen.update({node.id: node for node in nodes})
-        self.result.add_nodes(nodes)
+        if keep:
+            self.result.add_nodes(nodes)
         if dropped:
             raise BudgetExhaustedError("rows")
         return nodes
@@ -137,7 +144,9 @@ class Walk:
     """The state of a breadth-first walk."""
 
     depth: dict[str, int] = field(default_factory=dict)
-    via: dict[str, tuple[str, Edge]] = field(default_factory=dict)
+    # Node reached -> (node it was reached from, edge taken). The edge is None for a
+    # step that is not an edge in the graph, such as from a column to its table.
+    via: dict[str, tuple[str, Edge | None]] = field(default_factory=dict)
 
     def path(self, node_id: str) -> list[str]:
         """IDs from a start node to ``node_id``, inclusive."""
@@ -146,24 +155,29 @@ class Walk:
             path.append(self.via[path[-1]][0])
         return path[::-1]
 
-    def hops(self, node_id: str) -> list[tuple[str, Edge]]:
-        """The (node reached, edge taken) pairs from a start node to ``node_id``."""
-        path = self.path(node_id)
-        return [(step, self.via[step][1]) for step in path[1:]]
+    def hops(self, node_id: str) -> list[tuple[str, str, Edge | None]]:
+        """The (node reached, node it was reached from, edge taken) steps to ``node_id``."""
+        return [(step, *self.via[step]) for step in self.path(node_id)[1:]]
 
 
 def walk(
-    ctx: ToolContext, start_ids: Sequence[str], steps: Sequence[Step], max_depth: int
+    ctx: ToolContext,
+    start_ids: Sequence[str],
+    steps: Sequence[Step],
+    max_depth: int,
+    also: Callable[[Sequence[str]], dict[str, str]] | None = None,
 ) -> Iterator[tuple[Walk, list[Node]]]:
     """Walk outwards from ``start_ids`` one level at a time.
 
     Yields the walk state and the nodes first reached at each depth, nearest first, so a
     caller can record what it learns level by level and keep it if the budget runs out.
+    ``also`` may name further nodes to step to from the current level, as a mapping from
+    the node to step to onto the node it is reached from.
     """
     state = Walk(depth=dict.fromkeys(start_ids, 0))
     frontier = list(start_ids)
     for depth in range(1, max_depth + 1):
-        candidates: dict[str, tuple[str, Edge]] = {}
+        candidates: dict[str, tuple[str, Edge | None]] = {}
         for step in steps:
             declared = ctx.ontology.edge_type(step.edge_type)
             near = {e.source if step.direction == "out" else e.target for e in declared.endpoints}
@@ -176,6 +190,9 @@ def walk(
                 )
                 if there not in state.depth:
                     candidates.setdefault(there, (here, edge))
+        for there, here in (also(frontier) if also is not None else {}).items():
+            if there not in state.depth:
+                candidates.setdefault(there, (here, None))
         reached = ctx.nodes(candidates)
         for node in reached:
             state.depth[node.id] = depth

@@ -77,6 +77,7 @@ def test_defaults_apply_when_optional_arguments_are_omitted(kit: gg.Toolkit) -> 
         ("get_asset_context", {"asset_id": "nope"}, "invalid_input"),
         ("get_asset_context", {"asset_id": asset("no.such").id}, "not_found"),
         ("impact_of", {"entity_id": F1002, "depth": 4}, "invalid_input"),
+        ("impact_of", {"entity_id": F1002, "depth": 2.0}, "invalid_input"),
         ("run_sql", {"query": "SELECT 1"}, "unknown_tool"),
         ("find_by_term", None, "invalid_input"),
     ],

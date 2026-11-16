@@ -28,6 +28,10 @@ CALLS: list[tuple[str, dict[str, Any]]] = [
     ("impact_of", {"entity_id": RAW_AMOUNT, "depth": 3}),
     ("upstream_causes", {"asset_id": REVENUE, "depth": 5}),
     ("find_by_term", {"term": "revenue"}),
+    # Asked of a table, where the failures and some of the lineage are on its columns.
+    ("upstream_causes", {"asset_id": asset("reporting.daily_revenue").id, "depth": 5}),
+    ("explain_failure", {"failure_id": F1001}),
+    ("impact_of", {"entity_id": RAW_AMOUNT, "depth": 2}),
 ]
 
 
@@ -195,7 +199,8 @@ def test_explain_failure_says_when_nothing_upstream_failed(kit: gg.Toolkit) -> N
     assert_well_formed(result)
     assert not any(s.startswith("Possible cause") for s in statements(result))
     assert result.claims[-1].statement == (
-        "No other failure is recorded on DataAsset 'raw.payments.amount' or within 3 steps upstream"
+        "No other failure is recorded on DataAsset 'raw.payments.amount', on the assets "
+        "that contain it or are part of it, or within 3 steps upstream of them"
     )
     assert result.claims[-1].citations == (RAW_AMOUNT,)
 
@@ -270,16 +275,167 @@ def test_failure_on_the_containing_table_is_described_as_such(ontology: gg.Ontol
         "Possible cause: DQFailure 'F-7' failed on DataAsset 'shop.orders', "
         "the asset that contains it",
     ]
-    assert result.claims[-1].citations == (table.id, failure.id)
+    assert result.claims[-1].citations == (column.id, table.id, failure.id)
 
 
 def test_upstream_causes_says_when_there_are_none(kit: gg.Toolkit) -> None:
     result = kit.upstream_causes(asset("marts.customer_profile").id, depth=2)
     assert_well_formed(result)
     assert statements(result)[-1] == (
-        "No failure is recorded on DataAsset 'marts.customer_profile' "
-        "or within 2 steps upstream of it"
+        "No failure is recorded on DataAsset 'marts.customer_profile', on the assets that "
+        "contain it or are part of it, or within 2 steps upstream of them"
     )
+
+
+def tables_and_columns(store: gg.MemoryStore, *names: str) -> dict[str, gg.NodeRecord]:
+    """Create assets; a name with two dots is a column of the table before the last dot."""
+    records = {}
+    for name in names:
+        parent = name.rpartition(".")[0] if name.count(".") == 2 else None
+        records[name] = gg.NodeRecord(
+            "DataAsset", {"qualified_name": name}, {"parent_qualified_name": parent}
+        )
+    store.upsert(records.values())
+    return records
+
+
+def fail_on(store: gg.MemoryStore, failure_id: str, target: gg.NodeRecord) -> gg.NodeRecord:
+    failure = gg.NodeRecord("DQFailure", {"failure_id": failure_id})
+    store.upsert([failure], [gg.EdgeRecord("FAILED_ON", failure.ref(), target.ref())])
+    return failure
+
+
+def test_table_lineage_with_column_failures_is_not_reported_as_clean(
+    ontology: gg.Ontology,
+) -> None:
+    """Lineage between tables, failures on columns: the common shape in real catalogs."""
+    store = gg.MemoryStore(ontology)
+    a = tables_and_columns(
+        store, "raw.pay", "raw.pay.amount", "rpt.rev", "rpt.rev.total", "rpt.rev.day"
+    )
+    store.upsert(edges=[gg.EdgeRecord("DERIVES_FROM", a["rpt.rev"].ref(), a["raw.pay"].ref())])
+    failure = fail_on(store, "F-1", a["raw.pay.amount"])
+    kit = gg.Toolkit(store.reader())
+
+    on_table = kit.upstream_causes(a["raw.pay"].id)
+    downstream = kit.upstream_causes(a["rpt.rev"].id)
+    from_column = kit.upstream_causes(a["rpt.rev.total"].id)
+
+    assert statements(on_table) == [
+        "Possible cause: DQFailure 'F-1' failed on DataAsset 'raw.pay.amount', a part of the asset"
+    ]
+    assert on_table.claims[0].citations == (a["raw.pay"].id, a["raw.pay.amount"].id, failure.id)
+    assert statements(downstream) == [
+        "DataAsset 'rpt.rev' derives from DataAsset 'raw.pay'",
+        "Possible cause: DQFailure 'F-1' failed on DataAsset 'raw.pay.amount', "
+        "a part of DataAsset 'raw.pay', 1 step upstream of DataAsset 'rpt.rev'",
+    ]
+    assert downstream.claims[-1].citations == (
+        a["rpt.rev"].id,
+        a["raw.pay"].id,
+        a["raw.pay.amount"].id,
+        failure.id,
+    )
+    assert statements(from_column)[-1] == (
+        "Possible cause: DQFailure 'F-1' failed on DataAsset 'raw.pay.amount', "
+        "a part of DataAsset 'raw.pay', 1 step upstream of DataAsset 'rpt.rev.total'"
+    )
+    for result in (on_table, downstream, from_column):
+        assert_well_formed(result)
+        # Columns that were read but support no claim stay out of the result.
+        assert a["rpt.rev.day"].id not in {n.id for n in result.nodes}
+
+
+def test_a_failure_on_a_sibling_column_is_not_a_cause(ontology: gg.Ontology) -> None:
+    store = gg.MemoryStore(ontology)
+    a = tables_and_columns(store, "shop.orders", "shop.orders.total", "shop.orders.note")
+    fail_on(store, "F-1", a["shop.orders.note"])
+
+    result = gg.Toolkit(store.reader()).upstream_causes(a["shop.orders.total"].id)
+
+    assert statements(result) == [
+        "DataAsset 'shop.orders.total' is part of DataAsset 'shop.orders'",
+        "No failure is recorded on DataAsset 'shop.orders.total', on the assets that "
+        "contain it or are part of it, or within 3 steps upstream of them",
+    ]
+
+
+def test_column_failure_upstream_of_a_table_is_found_through_column_lineage(
+    ontology: gg.Ontology,
+) -> None:
+    store = gg.MemoryStore(ontology)
+    a = tables_and_columns(store, "raw.pay", "raw.pay.amount", "rpt.rev", "rpt.rev.total")
+    store.upsert(
+        edges=[gg.EdgeRecord("DERIVES_FROM", a["rpt.rev.total"].ref(), a["raw.pay.amount"].ref())]
+    )
+    fail_on(store, "F-1", a["raw.pay"])
+
+    result = gg.Toolkit(store.reader()).upstream_causes(a["rpt.rev"].id)
+
+    assert statements(result)[-1] == (
+        "Possible cause: DQFailure 'F-1' failed on DataAsset 'raw.pay', "
+        "which contains DataAsset 'raw.pay.amount', 1 step upstream of DataAsset 'rpt.rev'"
+    )
+    assert result.claims[-1].citations[:4] == (
+        a["rpt.rev"].id,
+        a["rpt.rev.total"].id,
+        a["raw.pay.amount"].id,
+        a["raw.pay"].id,
+    )
+
+
+def test_containment_follows_nested_parts_and_survives_loops(ontology: gg.Ontology) -> None:
+    store = gg.MemoryStore(ontology)
+
+    def part(name: str, parent: str) -> gg.NodeRecord:
+        return gg.NodeRecord(
+            "DataAsset", {"qualified_name": name}, {"parent_qualified_name": parent}
+        )
+
+    table = gg.NodeRecord("DataAsset", {"qualified_name": "t"})
+    address, city = part("t.address", "t"), part("t.address.city", "t.address")
+    own_parent = part("loop", "loop")
+    case_twin = part("T.other", "T")
+    store.upsert([table, address, city, own_parent, case_twin])
+    failure = fail_on(store, "F-1", city)
+    fail_on(store, "F-2", case_twin)
+    kit = gg.Toolkit(store.reader())
+
+    nested = kit.upstream_causes(table.id)
+    upward = kit.upstream_causes(city.id)
+
+    assert statements(nested) == [
+        "Possible cause: DQFailure 'F-1' failed on DataAsset 't.address.city', a part of the asset"
+    ]
+    assert nested.claims[0].citations == (table.id, city.id, failure.id)
+    assert statements(upward)[:2] == [
+        "DataAsset 't.address.city' is part of DataAsset 't.address'",
+        "DataAsset 't.address' is part of DataAsset 't'",
+    ]
+    assert statements(kit.upstream_causes(own_parent.id))[-1].startswith("No failure is recorded")
+    assert not kit.impact_of(own_parent.id, depth=3).truncated
+
+
+def test_impact_crosses_from_a_column_to_its_table(ontology: gg.Ontology) -> None:
+    store = gg.MemoryStore(ontology)
+    a = tables_and_columns(store, "raw.pay", "raw.pay.amount", "rpt.rev")
+    store.upsert(edges=[gg.EdgeRecord("DERIVES_FROM", a["rpt.rev"].ref(), a["raw.pay"].ref())])
+
+    result = gg.Toolkit(store.reader()).impact_of(a["raw.pay.amount"].id, depth=3)
+
+    assert statements(result) == [
+        "A problem at DataAsset 'raw.pay.amount' affects DataAsset 'raw.pay' "
+        "(1 step: DataAsset 'raw.pay.amount' is part of DataAsset 'raw.pay')",
+        "A problem at DataAsset 'raw.pay.amount' affects DataAsset 'rpt.rev' "
+        "(2 steps: DataAsset 'raw.pay.amount' is part of DataAsset 'raw.pay'; "
+        "DataAsset 'rpt.rev' derives from DataAsset 'raw.pay')",
+    ]
+    assert result.claims[-1].citations == (
+        a["raw.pay.amount"].id,
+        a["raw.pay"].id,
+        a["rpt.rev"].id,
+    )
+    assert_well_formed(result)
 
 
 def test_impact_of(loaded: Backend) -> None:
@@ -315,6 +471,7 @@ def test_impact_of_defaults_to_two_steps_and_accepts_any_node_type(kit: gg.Toolk
     affected = {s.split(" affects ")[1].split(" (")[0] for s in statements(result)}
     assert affected == {
         "DataAsset 'marts.order_facts.order_total'",
+        "DataAsset 'marts.order_facts'",
         "DataProduct 'Revenue Dashboard'",
         "CriticalDataElement 'Recognised Revenue'",
         "DataAsset 'reporting.daily_revenue.revenue'",
@@ -418,6 +575,8 @@ def test_limits_defaults_and_bounds() -> None:
         ("impact_of", {"entity_id": RAW_AMOUNT, "depth": True}),
         ("impact_of", {"entity_id": RAW_AMOUNT, "depth": "2"}),
         ("upstream_causes", {"asset_id": REVENUE, "depth": 2.5}),
+        ("impact_of", {"entity_id": RAW_AMOUNT, "depth": 2.0}),
+        ("upstream_causes", {"asset_id": REVENUE, "depth": 3.0}),
     ],
 )
 def test_depth_cannot_exceed_the_cap(kit: gg.Toolkit, name: str, arguments: dict[str, Any]) -> None:
@@ -646,6 +805,27 @@ def test_every_call_is_audited(memory_store: gg.MemoryStore) -> None:
     assert events[1].rows == 3
     assert all(e.elapsed_ms >= 0 for e in events)
     assert events[2].to_dict()["error_code"] == "not_found"
+
+
+def test_an_unexpected_failure_is_audited_and_hidden(
+    memory_store: gg.MemoryStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    events: list[gg.AuditEvent] = []
+    spy = SpyReader(memory_store.reader(), fail_with=RuntimeError("INTERNAL-DETAIL"))
+    kit = gg.Toolkit(spy, audit=events.append)
+
+    with (
+        caplog.at_level(logging.ERROR, logger="govgraph.tools"),
+        pytest.raises(gg.ToolError) as caught,
+    ):
+        kit.find_by_term("revenue")
+
+    assert str(caught.value) == "internal_error: the tool failed unexpectedly"
+    assert isinstance(caught.value.__cause__, RuntimeError)
+    assert [(e.tool, e.outcome, e.error_code) for e in events] == [
+        ("find_by_term", "error", "internal_error")
+    ]
+    assert "tool find_by_term failed unexpectedly" in caplog.text
 
 
 def test_audit_events_are_logged_by_default(

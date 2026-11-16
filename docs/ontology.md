@@ -109,9 +109,19 @@ so depth counts hops. The `LineageEdge` node type is the record of one transform
 `DERIVES_FROM` edge names it in `lineage_id`, and the tools cite it.
 
 **Tables and columns.** Both are `DataAsset` nodes. A column names its table in
-`parent_qualified_name` rather than through an edge. The tools use that to fall back to
-the table's owner when a column has none, and to start a lineage search from the table as
-well as the column.
+`parent_qualified_name` rather than through an edge, and a nested column names the column
+it sits in. The tools treat that as containment:
+
+- A column with no owner of its own is reported with its table's owner.
+- `upstream_causes` and `explain_failure` look for failures on each asset they reach, on
+  the assets that contain it and on the assets that are part of it. Catalogs often record
+  lineage between tables and failures on columns, or the other way round, and this is what
+  lets a question about a table find a failure on one of its columns. Other columns of the
+  same table are not treated as causes.
+- `impact_of` counts the move from a column to its table as one step, because a problem
+  in a column is a problem in its table.
+
+Containment is followed for up to three levels.
 
 ## Core types
 

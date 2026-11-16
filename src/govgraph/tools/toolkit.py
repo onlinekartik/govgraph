@@ -14,7 +14,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
@@ -24,7 +24,7 @@ from govgraph.ids import is_id, node_id
 from govgraph.records import Edge, Node
 from govgraph.spec.model import Ontology
 from govgraph.store.base import Direction, GraphReader
-from govgraph.tools.context import BudgetExhaustedError, Step, ToolContext, Walk, walk
+from govgraph.tools.context import BudgetExhaustedError, Step, ToolContext, walk
 from govgraph.tools.limits import EXPLAIN_UPSTREAM_DEPTH, Limits
 from govgraph.tools.results import ToolResult, Truncation
 from govgraph.tools.schemas import TOOL_SPECS
@@ -71,6 +71,32 @@ class AuditEvent:
             "elapsed_ms": round(self.elapsed_ms, 3),
             "error_code": self.error_code,
         }
+
+
+Relation = Literal["self", "contains", "part"]
+
+# How many levels of containment are followed: column, nested column, table.
+CONTAINMENT_LEVELS = 3
+
+
+@dataclass(frozen=True)
+class _Trail:
+    """How an asset was reached while looking upstream.
+
+    ``anchor`` is the asset that lineage led to. ``node`` is that asset, an asset that
+    contains it or an asset that is part of it, as ``relation`` says. ``path`` runs from
+    the asset first asked about to ``node`` and becomes the citations.
+    """
+
+    node: Node
+    anchor: Node
+    relation: Relation
+    path: tuple[Node, ...]
+    distance: int
+
+
+def node_id_of_asset(qualified_name: str) -> str:
+    return node_id(DATA_ASSET, {"qualified_name": qualified_name})
 
 
 def _log_audit_event(event: AuditEvent) -> None:
@@ -180,6 +206,11 @@ class Toolkit:
         except ToolError as error:
             self._emit(name, arguments, "error", ctx, started, error.code)
             raise
+        except Exception as error:
+            # A bug in a tool must still be audited, and must not carry internals out.
+            _LOG.exception("tool %s failed unexpectedly", name)
+            self._emit(name, arguments, "error", ctx, started, "internal_error")
+            raise ToolError("internal_error", "the tool failed unexpectedly") from error
         elapsed_ms = (self._clock() - started) * 1000
         result = ctx.result.build(name, limits, elapsed_ms, truncated_by)
         self._emit(name, arguments, "truncated" if result.truncated else "ok", ctx, started)
@@ -198,6 +229,11 @@ class Toolkit:
         error = next(iter(self._validators[name].iter_errors(dict(arguments))), None)
         if error is not None:
             raise ToolError("invalid_input", _argument_problem(error))
+        declared = TOOL_SPECS[name].input_schema["properties"]
+        for key, value in arguments.items():
+            # JSON Schema counts 2.0 as an integer. Python does not, so be strict here.
+            if declared[key]["type"] == "integer" and type(value) is not int:
+                raise ToolError("invalid_input", f"{key} must be of type integer")
         limits = {**self._limits.to_dict(), **self._depth_limits(name, arguments)}
         try:
             handler(ctx, **arguments)
@@ -286,18 +322,19 @@ class Toolkit:
                 reached[far.id] = far
         return list(reached.values())
 
-    def _parent(self, ctx: ToolContext, asset: Node) -> Node | None:
+    def _parent(self, ctx: ToolContext, asset: Node, announce: bool = True) -> Node | None:
         """The asset that contains ``asset``, for example the table of a column."""
         parent_name = asset.properties.get("parent_qualified_name")
         if not parent_name:
             return None
-        found = ctx.nodes([node_id(DATA_ASSET, {"qualified_name": parent_name})])
+        found = ctx.nodes([node_id_of_asset(parent_name)])
         if not found:
             return None
         parent = found[0]
-        ctx.result.claim(
-            f"{self._describe(asset)} is part of {self._describe(parent)}", asset, parent
-        )
+        if announce:
+            ctx.result.claim(
+                f"{self._describe(asset)} is part of {self._describe(parent)}", asset, parent
+            )
         return parent
 
     def _owners(self, ctx: ToolContext, assets: Sequence[Node]) -> None:
@@ -366,7 +403,8 @@ class Toolkit:
             ctx.result.claim(
                 "No other failure is recorded on "
                 + " or ".join(self._describe(a) for a in assets)
-                + f" or within {_plural(EXPLAIN_UPSTREAM_DEPTH, 'step')} upstream",
+                + ", on the assets that contain it or are part of it, or within "
+                + f"{_plural(EXPLAIN_UPSTREAM_DEPTH, 'step')} upstream of them",
                 *assets,
             )
 
@@ -375,64 +413,147 @@ class Toolkit:
         causes = self._upstream_failures(ctx, [asset], depth, set())
         if not causes:
             ctx.result.claim(
-                f"No failure is recorded on {self._describe(asset)} "
-                f"or within {_plural(depth, 'step')} upstream of it",
+                f"No failure is recorded on {self._describe(asset)}, on the assets that "
+                f"contain it or are part of it, or within {_plural(depth, 'step')} "
+                "upstream of them",
                 asset,
             )
+
+    def _relatives(
+        self, ctx: ToolContext, asset: Node, announce: bool = False
+    ) -> list[tuple[Node, Relation]]:
+        """The assets that contain ``asset`` and the assets that are part of it.
+
+        A table's columns are part of it, and a column's table contains it. Siblings are
+        deliberately left out: another column of the same table is neither.
+        """
+        seen = {asset.id}
+        relatives: list[tuple[Node, Relation]] = []
+        inner = asset
+        for _ in range(CONTAINMENT_LEVELS):
+            outer = self._parent(ctx, inner, announce=announce)
+            if outer is None or outer.id in seen:
+                break
+            seen.add(outer.id)
+            relatives.append((outer, "contains"))
+            inner = outer
+        holders = [asset]
+        for _ in range(CONTAINMENT_LEVELS):
+            parts: list[Node] = []
+            for holder in holders:
+                name = holder.properties.get("qualified_name")
+                if not name:
+                    continue
+                # The store matches text without regard to case; containment is exact.
+                for part in ctx.find(
+                    DATA_ASSET, "parent_qualified_name", name, "exact", keep=False
+                ):
+                    if part.properties.get("parent_qualified_name") == name and part.id not in seen:
+                        seen.add(part.id)
+                        parts.append(part)
+            relatives.extend((part, "part") for part in parts)
+            holders = parts
+        return relatives
 
     def _upstream_failures(
         self, ctx: ToolContext, assets: Sequence[Node], depth: int, ignore: set[str]
     ) -> int:
-        """State the lineage upstream of ``assets`` and every failure found along it."""
-        starts = {asset.id: asset for asset in assets}
-        for asset in assets:
-            parent = self._parent(ctx, asset)
-            if parent is not None:
-                starts.setdefault(parent.id, parent)
+        """State the lineage upstream of ``assets`` and every failure found along it.
 
-        asked = {asset.id for asset in assets}
-        found = self._failures_on(ctx, list(starts.values()), Walk(), ignore, asked)
-        steps = [Step("DERIVES_FROM", "out")]
-        for state, level in walk(ctx, list(starts), steps, depth):
-            self._load_ends(ctx, [state.via[node.id][1] for node in level])
-            for node in level:
-                stated = self._edge_sentence(ctx, state.via[node.id][1])
-                if stated is not None:
-                    ctx.result.claim(stated[0], *stated[1])
-            found += self._failures_on(ctx, level, state, ignore, asked)
+        Failures are looked for on each asset reached, on the assets that contain it and
+        on the assets that are part of it, because lineage is often recorded between
+        tables while failures are recorded on columns, or the other way round.
+        """
+        trails: dict[str, _Trail] = {}
+
+        def admit(anchors: Sequence[tuple[Node, tuple[Node, ...]]], distance: int) -> list[_Trail]:
+            # Assets reached directly come first, so a direct route wins over one through
+            # a containing asset.
+            level = []
+            for anchor, path in anchors:
+                if anchor.id not in trails:
+                    trails[anchor.id] = _Trail(anchor, anchor, "self", path, distance)
+                    level.append(trails[anchor.id])
+            for trail in list(level):
+                for relative, relation in self._relatives(ctx, trail.node, announce=distance == 0):
+                    if relative.id not in trails:
+                        route = (*trail.path, relative)
+                        trails[relative.id] = _Trail(
+                            relative, trail.node, relation, route, distance
+                        )
+                        level.append(trails[relative.id])
+            return level
+
+        level = admit([(asset, (asset,)) for asset in assets], 0)
+        found = self._failures_on(ctx, level, ignore)
+        for distance in range(1, depth + 1):
+            edges = ctx.edges([trail.node.id for trail in level], "DERIVES_FROM", "out")
+            self._load_ends(ctx, edges)
+            reached: list[tuple[Node, tuple[Node, ...]]] = []
+            for edge in edges:
+                stated = self._edge_sentence(ctx, edge)
+                target = ctx.known(edge.target_id)
+                if stated is None or target is None:
+                    continue
+                ctx.result.claim(stated[0], *stated[1])
+                reached.append((target, (*trails[edge.source_id].path, target)))
+            level = admit(reached, distance)
+            if not level:
+                break
+            found += self._failures_on(ctx, level, ignore)
         return found
 
-    def _failures_on(
-        self,
-        ctx: ToolContext,
-        assets: Sequence[Node],
-        state: Walk,
-        ignore: set[str],
-        asked: set[str],
-    ) -> int:
-        edges = ctx.edges([asset.id for asset in assets], "FAILED_ON", "in")
+    def _failures_on(self, ctx: ToolContext, level: Sequence[_Trail], ignore: set[str]) -> int:
+        by_asset = {trail.node.id: trail for trail in level}
+        edges = ctx.edges(list(by_asset), "FAILED_ON", "in")
         ctx.nodes([edge.source_id for edge in edges])
         found = 0
         for edge in edges:
-            failure, asset = ctx.known(edge.source_id), ctx.known(edge.target_id)
-            if failure is None or asset is None or failure.id in ignore:
+            failure, trail = ctx.known(edge.source_id), by_asset.get(edge.target_id)
+            if failure is None or trail is None or failure.id in ignore:
                 continue
-            path = [node for node in map(ctx.known, state.path(asset.id)) if node is not None]
-            distance = len(path) - 1
-            if distance:
-                where = f"{_plural(distance, 'step')} upstream of {self._describe(path[0])}"
-            elif asset.id in asked:
-                where = "the asset itself"
-            else:
-                where = "the asset that contains it"
             ctx.result.claim(
                 f"Possible cause: {self._failure_sentence(failure)} failed on "
-                f"{self._describe(asset)}, {where}",
-                *path,
+                f"{self._describe(trail.node)}, {self._where(trail)}",
+                *trail.path,
                 failure,
             )
             found += 1
         return found
+
+    def _where(self, trail: _Trail) -> str:
+        """Say where a failed asset sits relative to the asset that was asked about."""
+        if trail.distance == 0:
+            return {
+                "self": "the asset itself",
+                "contains": "the asset that contains it",
+                "part": "a part of the asset",
+            }[trail.relation]
+        upstream = f"{_plural(trail.distance, 'step')} upstream of {self._describe(trail.path[0])}"
+        if trail.relation == "self":
+            return upstream
+        link = "which contains" if trail.relation == "contains" else "a part of"
+        return f"{link} {self._describe(trail.anchor)}, {upstream}"
+
+    def _containers(self, ctx: ToolContext, node_ids: Sequence[str]) -> dict[str, str]:
+        """Map the ID of each containing asset to the ID of the asset it contains."""
+        containers: dict[str, str] = {}
+        for part_id in node_ids:
+            node = ctx.known(part_id)
+            parent_name = node.properties.get("parent_qualified_name") if node else None
+            if node is not None and node.type == DATA_ASSET and parent_name:
+                containers.setdefault(node_id_of_asset(parent_name), part_id)
+        return containers
+
+    def _hop_sentence(
+        self, ctx: ToolContext, reached: str, came_from: str, edge: Edge | None
+    ) -> tuple[str, list[Node]] | None:
+        if edge is not None:
+            return self._edge_sentence(ctx, edge)
+        part, whole = ctx.known(came_from), ctx.known(reached)
+        if part is None or whole is None:
+            return None
+        return f"{self._describe(part)} is part of {self._describe(whole)}", [part, whole]
 
     def _impact_of(self, ctx: ToolContext, entity_id: str, depth: int = 2) -> None:
         entity = ctx.require(entity_id)
@@ -442,11 +563,15 @@ class Toolkit:
             if edge.propagates != "none"
         ]
         affected = 0
-        for state, level in walk(ctx, [entity.id], steps, depth):
+        # A problem in part of an asset is a problem in the asset, so containment counts
+        # as a step too: from a column to its table.
+        for state, level in walk(
+            ctx, [entity.id], steps, depth, also=lambda ids: self._containers(ctx, ids)
+        ):
             for node in level:
                 hops = state.hops(node.id)
-                self._load_ends(ctx, [edge for _, edge in hops])
-                route = [self._edge_sentence(ctx, edge) for _, edge in hops]
+                self._load_ends(ctx, [edge for _, _, edge in hops if edge is not None])
+                route = [self._hop_sentence(ctx, there, here, edge) for there, here, edge in hops]
                 stated = [step for step in route if step is not None]
                 ctx.result.claim(
                     f"A problem at {self._describe(entity)} affects {self._describe(node)} "
