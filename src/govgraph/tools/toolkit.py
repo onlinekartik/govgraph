@@ -390,7 +390,8 @@ class Toolkit:
             if parent is not None:
                 starts.setdefault(parent.id, parent)
 
-        found = self._failures_on(ctx, list(starts.values()), Walk(), ignore)
+        asked = {asset.id for asset in assets}
+        found = self._failures_on(ctx, list(starts.values()), Walk(), ignore, asked)
         steps = [Step("DERIVES_FROM", "out")]
         for state, level in walk(ctx, list(starts), steps, depth):
             self._load_ends(ctx, [state.via[node.id][1] for node in level])
@@ -398,11 +399,16 @@ class Toolkit:
                 stated = self._edge_sentence(ctx, state.via[node.id][1])
                 if stated is not None:
                     ctx.result.claim(stated[0], *stated[1])
-            found += self._failures_on(ctx, level, state, ignore)
+            found += self._failures_on(ctx, level, state, ignore, asked)
         return found
 
     def _failures_on(
-        self, ctx: ToolContext, assets: Sequence[Node], state: Walk, ignore: set[str]
+        self,
+        ctx: ToolContext,
+        assets: Sequence[Node],
+        state: Walk,
+        ignore: set[str],
+        asked: set[str],
     ) -> int:
         edges = ctx.edges([asset.id for asset in assets], "FAILED_ON", "in")
         ctx.nodes([edge.source_id for edge in edges])
@@ -413,11 +419,12 @@ class Toolkit:
                 continue
             path = [node for node in map(ctx.known, state.path(asset.id)) if node is not None]
             distance = len(path) - 1
-            where = (
-                f"{_plural(distance, 'step')} upstream of {self._describe(path[0])}"
-                if distance
-                else "the asset itself"
-            )
+            if distance:
+                where = f"{_plural(distance, 'step')} upstream of {self._describe(path[0])}"
+            elif asset.id in asked:
+                where = "the asset itself"
+            else:
+                where = "the asset that contains it"
             ctx.result.claim(
                 f"Possible cause: {self._failure_sentence(failure)} failed on "
                 f"{self._describe(asset)}, {where}",

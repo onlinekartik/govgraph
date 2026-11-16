@@ -252,6 +252,27 @@ def test_upstream_causes_includes_failures_on_the_asset_itself(kit: gg.Toolkit) 
     )
 
 
+def test_failure_on_the_containing_table_is_described_as_such(ontology: gg.Ontology) -> None:
+    store = gg.MemoryStore(ontology)
+    table = gg.NodeRecord("DataAsset", {"qualified_name": "shop.orders"}, {"kind": "table"})
+    column = gg.NodeRecord(
+        "DataAsset",
+        {"qualified_name": "shop.orders.total"},
+        {"kind": "column", "parent_qualified_name": "shop.orders"},
+    )
+    failure = gg.NodeRecord("DQFailure", {"failure_id": "F-7"})
+    store.upsert([table, column, failure], [gg.EdgeRecord("FAILED_ON", failure.ref(), table.ref())])
+
+    result = gg.Toolkit(store.reader()).upstream_causes(column.id)
+
+    assert statements(result) == [
+        "DataAsset 'shop.orders.total' is part of DataAsset 'shop.orders'",
+        "Possible cause: DQFailure 'F-7' failed on DataAsset 'shop.orders', "
+        "the asset that contains it",
+    ]
+    assert result.claims[-1].citations == (table.id, failure.id)
+
+
 def test_upstream_causes_says_when_there_are_none(kit: gg.Toolkit) -> None:
     result = kit.upstream_causes(asset("marts.customer_profile").id, depth=2)
     assert_well_formed(result)

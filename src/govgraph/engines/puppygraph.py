@@ -7,9 +7,11 @@ the same way the tables are, which keeps the two in step.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from govgraph.errors import OntologyError
 from govgraph.spec.model import EdgeType, Endpoint, Ontology, Property, PropertyType
 from govgraph.store.ddl import DEFAULT_SCHEMA, quote_ident
 
@@ -23,6 +25,7 @@ PUPPYGRAPH_TYPES: dict[PropertyType, str] = {
 }
 
 _ID_FIELD = {"name": "id", "type": "STRING"}
+_PLAIN_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 
 
 @dataclass(frozen=True)
@@ -79,6 +82,11 @@ def puppygraph_schema(
     in PuppyGraph.
     """
     quote_ident(schema)
+    for name in ontology.node_types:
+        # Node type names are written into filter expressions, so insist on plain names
+        # even for an ontology that was not built by the loader.
+        if not _PLAIN_NAME.match(name):
+            raise OntologyError(f"node type name {name!r} cannot be used in a PuppyGraph schema")
     document: dict[str, Any] = {}
     if jdbc is not None:
         document["catalog"] = [

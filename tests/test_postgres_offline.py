@@ -22,6 +22,26 @@ def test_connection_failure_is_a_store_error(ontology: gg.Ontology) -> None:
         store.reader().get_nodes(["DataAsset:" + "0" * 32])
 
 
+def test_connections_get_a_timeout_unless_the_dsn_sets_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import psycopg
+
+    seen: list[dict[str, Any]] = []
+
+    def fake_connect(**options: Any) -> None:
+        seen.append(options)
+        raise psycopg.OperationalError("refused")
+
+    monkeypatch.setattr(psycopg, "connect", fake_connect)
+    for dsn in ("postgresql://u@db/meta", "postgresql://u@db/meta?connect_timeout=3"):
+        with pytest.raises(gg.StoreError, match="could not connect"):
+            postgres._connect(dsn)
+    assert seen[0]["connect_timeout"] == postgres.CONNECT_TIMEOUT_S
+    assert seen[1]["connect_timeout"] == "3"
+    assert seen[0]["host"] == "db"
+
+
 def test_nothing_is_sent_when_there_is_nothing_to_do(ontology: gg.Ontology) -> None:
     store = gg.PostgresStore(ontology, UNREACHABLE)
     assert store.upsert() == (0, 0)

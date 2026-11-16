@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections import defaultdict
 from collections.abc import Collection, Iterable, Iterator, Sequence
 from contextlib import contextmanager
@@ -40,10 +41,16 @@ def _driver() -> Any:
     return psycopg
 
 
+CONNECT_TIMEOUT_S = 10
+
+
 def _connect(dsn: str) -> psycopg.Connection[tuple[Any, ...]]:
     driver = _driver()
     try:
-        connection: psycopg.Connection[tuple[Any, ...]] = driver.connect(dsn)
+        # Without a timeout an unreachable host can block far longer than any tool limit.
+        options = driver.conninfo.conninfo_to_dict(dsn)
+        options.setdefault("connect_timeout", CONNECT_TIMEOUT_S)
+        connection: psycopg.Connection[tuple[Any, ...]] = driver.connect(**options)
     except driver.Error as exc:
         raise StoreError("could not connect to the database") from exc
     return connection
@@ -171,10 +178,15 @@ class PostgresReader:
         for node_id in set(node_ids):
             if is_id(node_id) and id_type(node_id) in self._ontology.node_types:
                 by_type[id_type(node_id)].append(node_id)
+        # One query per node type, all sharing the one time allowance.
+        deadline = time.monotonic() + (DEFAULT_TIMEOUT_S if timeout_s is None else timeout_s)
         nodes: list[Node] = []
         for node_type, ids in sorted(by_type.items()):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise StoreTimeoutError("the query exceeded its time limit")
             columns = node_columns(self._ontology.node_type(node_type))
-            for row in self._run(self._catalog.nodes_by_id(node_type, sorted(ids)), timeout_s):
+            for row in self._run(self._catalog.nodes_by_id(node_type, sorted(ids)), remaining):
                 nodes.append(Node(row[0], node_type, _properties(columns[1:], row[1:])))
         return sorted(nodes, key=lambda n: n.id)
 
