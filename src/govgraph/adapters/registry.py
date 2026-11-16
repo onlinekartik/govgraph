@@ -25,7 +25,7 @@ def _accepts_ontology(factory: Any) -> bool:
         return False
 
 
-def load(name: str, *, ontology: Ontology | None = None, **options: Any) -> Adapter:
+def load(name: str, /, *, ontology: Ontology | None = None, **options: Any) -> Adapter:
     """Create the adapter registered as ``name``, passing ``options`` to its constructor.
 
     ``ontology`` is passed on only to adapters whose constructor has a parameter of that

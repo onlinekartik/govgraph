@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +25,20 @@ def no_database_settings(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def restore_audit_logging() -> Iterator[None]:
+    """The command line configures the audit logger; undo that so other tests are unaffected."""
+    logger = logging.getLogger("govgraph.audit")
+    handlers, level, propagate = list(logger.handlers), logger.level, logger.propagate
+    yield
+    for handler in logger.handlers:
+        if handler not in handlers:
+            handler.close()
+    logger.handlers[:] = handlers
+    logger.setLevel(level)
+    logger.propagate = propagate
+
+
 def run(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, str, str]:
     status = main(list(argv))
     captured = capsys.readouterr()
@@ -31,15 +47,21 @@ def run(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, str, str]:
 
 def ok(capsys: pytest.CaptureFixture[str], *argv: str) -> str:
     status, out, err = run(capsys, *argv)
-    assert (status, err) == (0, "")
+    assert status == 0, err
+    # The only thing a successful command may write to standard error is its audit trail.
+    for line in err.splitlines():
+        assert set(json.loads(line)) >= {"tool", "arguments", "outcome", "rows"}
     return out
 
 
 def fails(capsys: pytest.CaptureFixture[str], *argv: str) -> str:
     status, out, err = run(capsys, *argv)
     assert (status, out) == (1, "")
-    assert err.startswith("error: ")
-    return err
+    assert "Traceback" not in err
+    message = [line for line in err.splitlines() if not line.startswith("{")]
+    assert len(message) == 1
+    assert message[0].startswith("error: ")
+    return message[0]
 
 
 def extension_file(tmp_path: Path) -> str:
@@ -162,6 +184,58 @@ def test_tools_run_on_the_sample_graph(capsys: pytest.CaptureFixture[str], tmp_p
     limited = json.loads(out.read_text())
     assert limited["truncated_by"] == "rows"
     assert limited["limits"]["max_rows"] == 4
+
+
+def test_tool_calls_leave_an_audit_trail(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    status, _, err = run(
+        capsys, "tool", "find_by_term", "--sample", "--args", '{"term": "revenue"}'
+    )
+    assert status == 0
+    (event,) = [json.loads(line) for line in err.splitlines()]
+    assert (event["tool"], event["outcome"], event["arguments"]) == (
+        "find_by_term",
+        "ok",
+        {"term": "revenue"},
+    )
+
+    status, _, err = run(capsys, "tool", "nope", "--sample")
+    assert status == 1
+    refused = json.loads(err.splitlines()[0])
+    assert (refused["outcome"], refused["error_code"]) == ("error", "unknown_tool")
+
+    log = tmp_path / "audit.log"
+    for term in ("revenue", "customer"):
+        arguments = json.dumps({"term": term})
+        status, _, err = run(
+            capsys, "tool", "find_by_term", "--sample", "--args", arguments, "--audit-log", str(log)
+        )
+        assert (status, err) == (0, "")
+    terms = [json.loads(line)["arguments"]["term"] for line in log.read_text().splitlines()]
+    assert terms == ["revenue", "customer"]
+
+
+def test_output_that_cannot_be_written_is_an_error_not_a_crash(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    missing = str(tmp_path / "no_such_directory" / "out.json")
+    for argv in (
+        ["tool", "find_by_term", "--sample", "--args", '{"term": "x"}', "--out", missing],
+        ["export", F1002, "--sample", "--out", missing],
+        ["viewer", "--out", missing],
+        ["puppygraph-schema", "--out", missing],
+    ):
+        assert "No such file or directory" in fails(capsys, *argv)
+
+
+def test_adapter_options_cannot_collide_with_the_loader(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GOVGRAPH_DSN", "postgresql://nobody@127.0.0.1:1/nothing")
+    assert "adapter 'json' rejected its options" in fails(capsys, "ingest", "json", "-o", "name=x")
+    assert "chosen with --extension" in fails(capsys, "ingest", "json", "-o", "ontology=x")
+    assert "must look like name=value" in fails(capsys, "ingest", "json", "-o", "path")
 
 
 def test_tool_errors_are_reported(capsys: pytest.CaptureFixture[str]) -> None:

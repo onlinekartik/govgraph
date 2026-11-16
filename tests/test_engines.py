@@ -7,7 +7,7 @@ import pytest
 import govgraph as gg
 from govgraph.engines import JdbcConnection, puppygraph_schema
 from govgraph.engines.puppygraph import edge_label
-from govgraph.spec.model import NodeType, Ontology
+from govgraph.spec.model import EdgeType, Endpoint, NodeType, Ontology
 from govgraph.store.ddl import create_statements, edge_columns, node_columns
 
 JDBC = JdbcConnection("jdbc:postgresql://db:5432/meta", "graph_reader", "placeholder-value")
@@ -151,3 +151,13 @@ def test_hand_built_ontology_with_an_unsafe_type_name_is_refused(ontology: gg.On
         puppygraph_schema(rogue)
     with pytest.raises(gg.StoreError, match="unsafe SQL identifier"):
         create_statements(rogue)
+
+
+@pytest.mark.parametrize("hostile", ["A' OR '1'='1", "Owner\n"])
+def test_hand_built_ontology_with_an_unsafe_endpoint_is_refused(
+    ontology: gg.Ontology, hostile: str
+) -> None:
+    edge = EdgeType("SENT_TO", (Endpoint(hostile, "Owner"), Endpoint("Owner", "Owner")), {}, "to")
+    rogue = Ontology("rogue", "0.0.1", {"Owner": ontology.node_type("Owner")}, {"SENT_TO": edge})
+    with pytest.raises(gg.OntologyError, match="cannot be used in a PuppyGraph schema"):
+        puppygraph_schema(rogue)

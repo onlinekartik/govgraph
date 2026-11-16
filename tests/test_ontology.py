@@ -173,8 +173,8 @@ def test_rejects_edge_type_without_endpoints() -> None:
     ("document", "fragment"),
     [
         ({"node_types": {}}, "'ontology' is a required property"),
-        (extension(node_types={"lower": {"key": ["a"]}}), "'lower' does not match"),
-        (extension(edge_types={"Mixed_Case": {}}), "'Mixed_Case' does not match"),
+        (extension(node_types={"lower": {"key": ["a"]}}), "'lower' is not a valid node type name"),
+        (extension(edge_types={"Mixed_Case": {}}), "'Mixed_Case' is not a valid edge type name"),
         (extension(surprise=1), "Additional properties are not allowed"),
         (
             extension(node_types={"Thing": {"key": ["a"], "properties": {"a": {"type": "text"}}}}),
@@ -182,7 +182,7 @@ def test_rejects_edge_type_without_endpoints() -> None:
         ),
         (
             extension(node_types={"Thing": {"key": ["a"], "properties": {"Bad Name": {}}}}),
-            "'Bad Name' does not match",
+            "Thing: 'Bad Name' is not a valid property name",
         ),
         ({"ontology": {"name": "ext", "version": "1"}}, "'1' does not match"),
     ],
@@ -280,6 +280,48 @@ def test_rejects_types_whose_tables_collide_or_are_too_long() -> None:
     )
     assert "DqRule: table name 'node_dq_rule' collides with DQRule" in problems
     assert any("is longer than 50 characters" in problem for problem in problems)
+
+
+KEYED = {"key": ["a"], "properties": {"a": {"type": "string", "required": True}}}
+
+
+@pytest.mark.parametrize(
+    ("section", "fragment"),
+    [
+        ({"node_types": {"Pipe\n": KEYED}}, "'Pipe\\n' is not a valid node type name"),
+        ({"node_types": {True: KEYED}}, "True is not a valid node type name"),
+        ({"node_types": {'Pipe"; DROP': KEYED}}, "is not a valid node type name"),
+        (
+            {"edge_types": {"SENT_TO\n": {"endpoints": [{"source": "Owner", "target": "Owner"}]}}},
+            "'SENT_TO\\n' is not a valid edge type name",
+        ),
+        (
+            {"node_types": {"Owner": {"properties": {"note\n": {"type": "string"}}}}},
+            "Owner: 'note\\n' is not a valid property name",
+        ),
+        (
+            {"node_types": {"Owner": {"properties": {True: {"type": "string"}}}}},
+            "Owner: True is not a valid property name",
+        ),
+        (
+            {"node_types": {"Owner": {"properties": {"x" * 64: {"type": "string"}}}}},
+            "is not a valid property name",
+        ),
+    ],
+)
+def test_names_are_checked_in_full(section: dict[str, Any], fragment: str) -> None:
+    """A trailing newline or a non-string YAML key must not slip into a table name."""
+    assert any(fragment in problem for problem in problems_of(extension(**section)))
+
+
+def test_yaml_keys_that_are_not_strings_are_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "extension.yaml"
+    path.write_text(
+        "ontology: {name: ext, version: '0.1.0'}\n"
+        "node_types:\n  Owner:\n    properties:\n      on: {type: boolean}\n"
+    )
+    with pytest.raises(gg.OntologyError, match="True is not a valid property name"):
+        gg.load_ontology([path])
 
 
 def test_reports_every_problem_at_once() -> None:

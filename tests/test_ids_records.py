@@ -54,7 +54,16 @@ def test_edge_id_depends_on_type_and_direction() -> None:
 
 @pytest.mark.parametrize(
     "value",
-    ["", "DataAsset", "DataAsset:xyz", "DataAsset:" + "A" * 32, "'; DROP TABLE x;--", 7, None],
+    [
+        "",
+        "DataAsset",
+        "DataAsset:xyz",
+        "DataAsset:" + "A" * 32,
+        "DataAsset:" + "0" * 32 + "\n",
+        "'; DROP TABLE x;--",
+        7,
+        None,
+    ],
 )
 def test_is_id_rejects_malformed_values(value: object) -> None:
     assert not is_id(value)

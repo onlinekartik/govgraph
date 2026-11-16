@@ -80,7 +80,7 @@ govgraph tool explain_failure --sample \
 | `get_asset_context(asset_id)` | What is this asset, who owns it, what governs and checks it, and what is next to it in lineage? | one step, plus regulations |
 | `explain_failure(failure_id)` | Where did this failure happen, what raised it, who owns the data, what does it affect, and what upstream may have caused it? | 3 steps upstream |
 | `impact_of(entity_id, depth=2)` | What is affected if this node has a problem? | depth at most 3 |
-| `upstream_causes(asset_id, depth=3)` | Which failures are recorded on the assets this one is built from? | depth at most 5 |
+| `upstream_causes(asset_id, depth=3)` | Which failures are recorded on this asset, on its table or columns, and on the assets it is built from? | depth at most 5 |
 | `find_by_term(term)` | Which business terms match this text, and what do they define? | text match on term names |
 
 Every call also runs under `Limits(max_rows=200, timeout_s=5.0)`. You can change these up
@@ -98,8 +98,11 @@ for schema in tools.schemas():  # name, description, input_schema (JSON Schema)
 result = tools.call("impact_of", {"entity_id": some_id, "depth": 2})  # raises gg.ToolError
 ```
 
-Every call is written to the `govgraph.audit` logger as one JSON line. Pass
-`Toolkit(reader, audit=your_function)` to send audit events somewhere else.
+Every call produces an audit event. By default it is logged as one JSON line to the
+`govgraph.audit` logger at INFO level, which your application has to route somewhere to
+keep. Pass `Toolkit(reader, audit=your_function)` to handle the events yourself. The
+`govgraph tool` and `govgraph mcp` commands write them to standard error, or to a file with
+`--audit-log`.
 
 ### MCP
 

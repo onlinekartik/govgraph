@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Iterable, Mapping
 from functools import lru_cache
 from importlib import resources
@@ -65,8 +66,39 @@ def _read_core() -> tuple[str, Any]:
     return CORE_ONTOLOGY_FILE, yaml.safe_load(text)
 
 
+_NAME_RULES = {
+    "node_types": (re.compile(r"[A-Z][A-Za-z0-9]*"), "node type"),
+    "edge_types": (re.compile(r"[A-Z][A-Z0-9]*(_[A-Z0-9]+)*"), "edge type"),
+}
+_PROPERTY_NAME = re.compile(r"[a-z][a-z0-9_]{0,62}")
+
+
+def _name_problems(label: str, document: Any) -> list[str]:
+    """Check every name in full.
+
+    The JSON schema checks names too, but a regular expression search lets a trailing
+    newline through, and a YAML key such as ``on`` is not a string at all. Names become
+    table and column names, so nothing is left to chance here.
+    """
+    problems: list[str] = []
+    if not isinstance(document, Mapping):
+        return problems
+    for section, (pattern, kind) in _NAME_RULES.items():
+        types = document.get(section)
+        for name, definition in types.items() if isinstance(types, Mapping) else ():
+            if not isinstance(name, str) or not pattern.fullmatch(name):
+                problems.append(f"{label}: {name!r} is not a valid {kind} name")
+            properties = definition.get("properties") if isinstance(definition, Mapping) else None
+            for prop in properties if isinstance(properties, Mapping) else ():
+                if not isinstance(prop, str) or not _PROPERTY_NAME.fullmatch(prop):
+                    problems.append(f"{label}: {name}: {prop!r} is not a valid property name")
+    return problems
+
+
 def _schema_problems(label: str, document: Any) -> list[str]:
-    problems = []
+    problems = _name_problems(label, document)
+    if problems:
+        return problems
     for error in sorted(_validator().iter_errors(document), key=lambda e: list(e.absolute_path)):
         where = "/".join(str(part) for part in error.absolute_path) or "<root>"
         problems.append(f"{label}: {where}: {error.message}")

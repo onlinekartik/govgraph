@@ -53,7 +53,7 @@ def edge_id(edge_type: str, source_id: str, target_id: str) -> str:
 
 
 def is_id(value: object) -> bool:
-    return isinstance(value, str) and _ID_RE.match(value) is not None
+    return isinstance(value, str) and _ID_RE.fullmatch(value) is not None
 
 
 def id_type(identifier: str) -> str:

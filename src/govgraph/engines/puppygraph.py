@@ -82,11 +82,14 @@ def puppygraph_schema(
     in PuppyGraph.
     """
     quote_ident(schema)
-    for name in ontology.node_types:
-        # Node type names are written into filter expressions, so insist on plain names
-        # even for an ontology that was not built by the loader.
-        if not _PLAIN_NAME.match(name):
-            raise OntologyError(f"node type name {name!r} cannot be used in a PuppyGraph schema")
+    # Type names become labels and are written into filter expressions, so insist on
+    # plain names even for an ontology that was not built by the loader.
+    names = [*ontology.node_types, *ontology.edge_types]
+    for edge_type in ontology.edge_types.values():
+        names += [name for e in edge_type.endpoints for name in (e.source, e.target)]
+    for name in names:
+        if not isinstance(name, str) or not _PLAIN_NAME.fullmatch(name):
+            raise OntologyError(f"type name {name!r} cannot be used in a PuppyGraph schema")
     document: dict[str, Any] = {}
     if jdbc is not None:
         document["catalog"] = [

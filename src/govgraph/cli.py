@@ -6,12 +6,16 @@ do not end up in shell history or process listings:
 ``GOVGRAPH_DSN``           a role that may write, used by ``init``, ``grant-reader``, ``ingest``
 ``GOVGRAPH_READER_DSN``    a role that may only read, used by ``tool``, ``export``, ``mcp``
 ``GOVGRAPH_JDBC_PASSWORD`` the password ``puppygraph-schema --jdbc-uri`` puts in the catalog
+
+Commands that run tools (``tool``, ``mcp``) write one audit line per call to standard error,
+or to the file given with ``--audit-log``.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 from collections.abc import Sequence
@@ -74,8 +78,31 @@ def _reader(args: argparse.Namespace) -> GraphReader:
     return reader
 
 
+_AUDIT_HANDLER = "govgraph-cli-audit"
+
+
+def _keep_audit_trail(path: str | None) -> None:
+    """Send audit events to ``path``, or to standard error.
+
+    As a library govgraph only emits log records, and it is up to the application to keep
+    them. Here the command line is the application, so it has to.
+    """
+    logger = logging.getLogger("govgraph.audit")
+    for handler in [h for h in logger.handlers if h.get_name() == _AUDIT_HANDLER]:
+        logger.removeHandler(handler)
+        handler.close()
+    handler = logging.FileHandler(path, encoding="utf-8") if path else logging.StreamHandler()
+    handler.set_name(_AUDIT_HANDLER)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+
 def _toolkit(args: argparse.Namespace) -> Toolkit:
-    return Toolkit(_reader(args), limits=Limits(max_rows=args.max_rows, timeout_s=args.timeout))
+    limits = Limits(max_rows=args.max_rows, timeout_s=args.timeout)
+    _keep_audit_trail(args.audit_log)
+    return Toolkit(_reader(args), limits=limits)
 
 
 def _pairs(items: Sequence[str], what: str) -> dict[str, str]:
@@ -162,6 +189,8 @@ def _cmd_grant_reader(args: argparse.Namespace) -> None:
 def _cmd_ingest(args: argparse.Namespace) -> None:
     store = _store(args)
     options = _pairs(args.option, "an adapter option")
+    if "ontology" in options:
+        raise UsageError("the ontology is chosen with --extension, not with -o ontology=...")
     adapter = adapters.load(args.adapter, ontology=store.ontology, **options)
     report = ingest(adapter, store, on_error=args.on_error)
     _write(
@@ -240,6 +269,11 @@ def _parser() -> argparse.ArgumentParser:
     )
     reading.add_argument("--max-rows", type=int, default=Limits().max_rows, metavar="N")
     reading.add_argument("--timeout", type=float, default=Limits().timeout_s, metavar="SECONDS")
+    reading.add_argument(
+        "--audit-log",
+        metavar="FILE",
+        help="append one JSON line per tool call to FILE (default: standard error)",
+    )
 
     parser = argparse.ArgumentParser(
         prog="govgraph",
@@ -311,6 +345,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.handler(args)
     except (GovGraphError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
+        return 1
+    except OSError as error:
+        target = f": {error.filename}" if error.filename else ""
+        print(f"error: {error.strerror or error}{target}", file=sys.stderr)
         return 1
     return 0
 
