@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:govgraph:ontology-document:1",
+  "title": "govgraph ontology document",
+  "description": "Structure of a core or extension ontology file. Cross-references between types are checked separately after all documents are merged.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["ontology"],
+  "properties": {
+    "ontology": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" },
+        "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "description": { "type": "string" }
+      }
+    },
+    "node_types": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[A-Z][A-Za-z0-9]*$" },
+      "additionalProperties": { "$ref": "#/$defs/nodeType" }
+    },
+    "edge_types": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[A-Z][A-Z0-9]*(_[A-Z0-9]+)*$" },
+      "additionalProperties": { "$ref": "#/$defs/edgeType" }
+    }
+  },
+  "$defs": {
+    "property": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["string", "integer", "number", "boolean", "date", "datetime"] },
+        "required": { "type": "boolean" },
+        "enum": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "description": { "type": "string" }
+      }
+    },
+    "properties": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-z][a-z0-9_]*$", "maxLength": 63 },
+      "additionalProperties": { "$ref": "#/$defs/property" }
+    },
+    "nodeType": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "description": { "type": "string" },
+        "key": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "display": { "type": "string" },
+        "properties": { "$ref": "#/$defs/properties" }
+      }
+    },
+    "edgeType": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "description": { "type": "string" },
+        "phrase": { "type": "string", "minLength": 1 },
+        "propagates": { "enum": ["source_to_target", "target_to_source", "none"] },
+        "endpoints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["source", "target"],
+            "properties": {
+              "source": { "type": "string" },
+              "target": { "type": "string" }
+            }
+          }
+        },
+        "properties": { "$ref": "#/$defs/properties" }
+      }
+    }
+  }
+}

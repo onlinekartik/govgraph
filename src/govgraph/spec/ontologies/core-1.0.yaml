@@ -1,0 +1,229 @@
+# govgraph core ontology.
+#
+# This file is the single source of truth for the built-in node and edge types.
+# Database tables, graph-engine mappings, record validation and the agent tools are
+# all derived from it. Extend it with your own YAML file instead of editing it; see
+# docs/ontology.md.
+
+ontology:
+  name: core
+  version: "1.0.0"
+  description: Generic data-governance concepts.
+
+node_types:
+
+  DataAsset:
+    description: A physical data object such as a table, a view or a column.
+    key: [qualified_name]
+    display: qualified_name
+    properties:
+      qualified_name:
+        type: string
+        required: true
+        description: Unique dotted name, for example warehouse.orders.total.
+      name: { type: string, description: Short name. }
+      kind:
+        type: string
+        enum: [table, view, column, file, other]
+        description: What sort of object this is.
+      parent_qualified_name:
+        type: string
+        description: Qualified name of the containing asset, for example the table of a column.
+      data_type: { type: string, description: Declared type of a column. }
+      description: { type: string }
+
+  BusinessTerm:
+    description: A glossary term that gives data a business meaning.
+    key: [name]
+    display: name
+    properties:
+      name: { type: string, required: true }
+      definition: { type: string }
+      domain: { type: string, description: Subject area the term belongs to. }
+      status: { type: string, enum: [draft, approved, deprecated] }
+
+  CriticalDataElement:
+    description: A data element that the organisation has decided needs extra control.
+    key: [name]
+    display: name
+    properties:
+      name: { type: string, required: true }
+      description: { type: string }
+      criticality: { type: string, enum: [low, medium, high] }
+
+  Regulation:
+    description: An external rule or internal policy that data must comply with.
+    key: [code]
+    display: name
+    properties:
+      code: { type: string, required: true, description: Short unique identifier. }
+      name: { type: string }
+      description: { type: string }
+
+  DataProduct:
+    description: A curated set of data assets delivered to consumers as one unit.
+    key: [name]
+    display: name
+    properties:
+      name: { type: string, required: true }
+      description: { type: string }
+      domain: { type: string }
+      status: { type: string, enum: [draft, active, retired] }
+
+  Owner:
+    description: A person, team or role that is accountable for something.
+    key: [identifier]
+    display: name
+    properties:
+      identifier: { type: string, required: true, description: Stable unique handle. }
+      name: { type: string }
+      kind: { type: string, enum: [person, team, role] }
+
+  DQRule:
+    description: A data-quality check that can be evaluated against data.
+    key: [rule_id]
+    display: name
+    properties:
+      rule_id: { type: string, required: true }
+      name: { type: string }
+      description: { type: string }
+      dimension:
+        type: string
+        enum: [completeness, validity, uniqueness, timeliness, consistency, accuracy]
+      severity: { type: string, enum: [low, medium, high, critical] }
+      expression:
+        type: string
+        description: The check, in whatever language the rule engine uses.
+
+  DQResult:
+    description: The outcome of evaluating one rule in one run.
+    key: [rule_id, run_id]
+    display: run_id
+    properties:
+      rule_id: { type: string, required: true }
+      run_id: { type: string, required: true }
+      status: { type: string, enum: [pass, warn, fail, error] }
+      executed_at: { type: datetime }
+      rows_checked: { type: integer }
+      rows_failed: { type: integer }
+
+  DQFailure:
+    description: A data-quality incident raised because a rule did not pass.
+    key: [failure_id]
+    display: failure_id
+    properties:
+      failure_id: { type: string, required: true }
+      summary: { type: string }
+      severity: { type: string, enum: [low, medium, high, critical] }
+      status: { type: string, enum: [open, acknowledged, resolved] }
+      detected_at: { type: datetime }
+      failed_count: { type: integer }
+
+  LineageEdge:
+    description: >-
+      The record of one transformation that moves data from one asset to another.
+      A DERIVES_FROM edge points at it so that tools can cite where a lineage claim came from.
+    key: [source_qualified_name, target_qualified_name, process]
+    display: process
+    properties:
+      source_qualified_name: { type: string, required: true, description: The upstream asset. }
+      target_qualified_name: { type: string, required: true, description: The downstream asset. }
+      process:
+        type: string
+        required: true
+        description: Job, model or query that does the work.
+      transformation: { type: string, description: What the process does to the data. }
+
+edge_types:
+
+  DEFINES:
+    description: A business term defines the meaning of an asset or a critical data element.
+    phrase: defines
+    propagates: source_to_target
+    endpoints:
+      - { source: BusinessTerm, target: DataAsset }
+      - { source: BusinessTerm, target: CriticalDataElement }
+
+  CLASSIFIED_AS:
+    description: An asset holds a critical data element.
+    phrase: is classified as
+    propagates: source_to_target
+    endpoints:
+      - { source: DataAsset, target: CriticalDataElement }
+
+  GOVERNED_BY:
+    description: Something is subject to a regulation.
+    phrase: is governed by
+    propagates: source_to_target
+    endpoints:
+      - { source: CriticalDataElement, target: Regulation }
+      - { source: DataAsset, target: Regulation }
+      - { source: DataProduct, target: Regulation }
+
+  OWNED_BY:
+    description: Something is the responsibility of an owner.
+    phrase: is owned by
+    propagates: source_to_target
+    endpoints:
+      - { source: DataAsset, target: Owner }
+      - { source: DataProduct, target: Owner }
+      - { source: BusinessTerm, target: Owner }
+      - { source: CriticalDataElement, target: Owner }
+      - { source: DQRule, target: Owner }
+
+  VALIDATES:
+    description: A rule checks an asset.
+    phrase: validates
+    propagates: source_to_target
+    endpoints:
+      - { source: DQRule, target: DataAsset }
+
+  PROTECTS:
+    description: A rule exists to safeguard a critical data element.
+    phrase: protects
+    propagates: source_to_target
+    endpoints:
+      - { source: DQRule, target: CriticalDataElement }
+
+  DERIVES_FROM:
+    description: >-
+      The source is built from the target, so the target is upstream of the source.
+      A problem at the target therefore flows to the source.
+    phrase: derives from
+    propagates: target_to_source
+    endpoints:
+      - { source: DataAsset, target: DataAsset }
+      - { source: DataProduct, target: DataAsset }
+    properties:
+      lineage_id:
+        type: string
+        description: Node ID of the LineageEdge record that documents this derivation.
+
+  FAILED_ON:
+    description: A failure was observed on an asset.
+    phrase: failed on
+    propagates: source_to_target
+    endpoints:
+      - { source: DQFailure, target: DataAsset }
+
+  IMPACTS:
+    description: A failure is known to affect a data product or a critical data element.
+    phrase: impacts
+    propagates: source_to_target
+    endpoints:
+      - { source: DQFailure, target: DataProduct }
+      - { source: DQFailure, target: CriticalDataElement }
+
+  RESULT_OF:
+    description: A result was produced by evaluating a rule.
+    phrase: is a result of
+    propagates: none
+    endpoints:
+      - { source: DQResult, target: DQRule }
+
+  RAISED_FROM:
+    description: A failure was raised because of a result.
+    phrase: was raised from
+    propagates: none
+    endpoints:
+      - { source: DQFailure, target: DQResult }
