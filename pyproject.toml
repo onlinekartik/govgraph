@@ -29,6 +29,12 @@ dependencies = [
   "networkx>=3.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/onlinekartik/govgraph"
+Repository = "https://github.com/onlinekartik/govgraph"
+Issues = "https://github.com/onlinekartik/govgraph/issues"
+Changelog = "https://github.com/onlinekartik/govgraph/blob/main/CHANGELOG.md"
+
 [project.optional-dependencies]
 postgres = ["psycopg[binary]>=3.1"]
 mcp = ["mcp>=2,<3"]

@@ -19,8 +19,8 @@ Status: alpha (0.1.0). The API may change before 1.0.
 
 ## Quickstart
 
-You need Python 3.10 or later. govgraph is not on a package index yet, so install it from a
-checkout:
+You need Python 3.10 or later. The first PyPI release is being prepared. Until it is
+available, install from a checkout:
 
 ```console
 git clone https://github.com/onlinekartik/govgraph.git govgraph
@@ -209,6 +209,7 @@ python examples/online_store/run_demo.py --memory
 - [Writing an adapter](docs/adapters.md)
 - [Security notes](docs/security.md): what the safety properties are and how they are enforced.
 - [Changelog](CHANGELOG.md)
+- [Publishing guide](docs/publishing.md)
 
 ## Development
 
