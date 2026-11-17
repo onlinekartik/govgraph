@@ -23,7 +23,7 @@ You need Python 3.10 or later. govgraph is not on a package index yet, so instal
 checkout:
 
 ```console
-git clone <this repository> govgraph
+git clone https://github.com/onlinekartik/govgraph.git govgraph
 cd govgraph
 python -m venv .venv && source .venv/bin/activate
 pip install .
