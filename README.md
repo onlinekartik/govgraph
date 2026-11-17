@@ -19,14 +19,10 @@ Status: alpha (0.1.0). The API may change before 1.0.
 
 ## Quickstart
 
-You need Python 3.10 or later. The first PyPI release is being prepared. Until it is
-available, install from a checkout:
+You need Python 3.10 or later. Install govgraph from PyPI:
 
 ```console
-git clone https://github.com/onlinekartik/govgraph.git govgraph
-cd govgraph
-python -m venv .venv && source .venv/bin/activate
-pip install .
+python -m pip install govgraph
 ```
 
 Then run this. It needs no database and no network.
@@ -107,7 +103,7 @@ keep. Pass `Toolkit(reader, audit=your_function)` to handle the events yourself.
 ### MCP
 
 ```console
-pip install ".[mcp]"
+pip install "govgraph[mcp]"
 govgraph mcp --sample                      # the sample graph, to try a client against
 GOVGRAPH_READER_DSN=... govgraph mcp       # your graph in PostgreSQL
 ```
@@ -142,7 +138,7 @@ rejects the whole batch and nothing is written.
 ## PostgreSQL
 
 ```console
-pip install ".[postgres]"
+pip install "govgraph[postgres]"
 export GOVGRAPH_DSN="postgresql://..."          # a role that may create tables and write
 govgraph init                                   # creates the schema from the ontology
 govgraph ingest dbt -o manifest_path=target/manifest.json

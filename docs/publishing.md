@@ -12,10 +12,10 @@ credential through OpenID Connect; no PyPI API token is stored in the repository
    - Repository: `govgraph`
    - Workflow filename: `publish.yml`
    - Environment: `pypi`
-3. Before releasing, set the release version in `pyproject.toml` and
-   `src/govgraph/__init__.py`, replace the `Unreleased` changelog heading with the release
-   version and date, and update the README installation instructions to use PyPI. Merge
-   those changes to `main`. The version in the tag must match the version in `pyproject.toml`.
+3. Confirm `pyproject.toml` and `src/govgraph/__init__.py` carry the release version,
+   `CHANGELOG.md` has the release date, and the README installation instructions use PyPI.
+   Merge those changes to `main`. The version in the tag must match the version in
+   `pyproject.toml`.
 4. Create and push a version tag, for example:
 
    ```console
